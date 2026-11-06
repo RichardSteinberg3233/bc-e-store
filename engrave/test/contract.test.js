@@ -260,8 +260,113 @@ test("checkout is blocked while an engraving line has no saved instructions", fu
   const missing = C.incomplete(items);
   assert.equal(missing.length, 1);
   assert.equal(missing[0].role, "knife");
+  assert.equal(C.allowCheckout(items), false);
   const done = C.applyKnife(items, { forSku: "SKU-1", itemName: "Knife One", fields: fields() });
-  assert.equal(C.incomplete(done.items).length, 0);
+  assert.equal(C.allowCheckout(done.items), true);
+});
+
+test("one finished line does not cover a direct or blank engraving line", function () {
+  const done = C.applyKnife([knife(101), blank(1)], { forSku: "SKU-1", itemName: "Knife One", fields: fields() });
+  const withBlank = done.items.concat([blank(1)]);
+  assert.equal(C.incomplete(withBlank).length, 1);
+  assert.equal(C.allowCheckout(withBlank), false);
+  const nativePartial = {
+    product: { id: C.ENGRAVE_ID, sku: "ENGRAVE", name: "ENGRAVE", price: 15 },
+    quantity: 1,
+    options: {
+      "BC instructions v": "1",
+      "Name": "Ada",
+      "Phone": "4325550100",
+      "Font": "1 Allura",
+      "Placement": "Blade",
+      "Engraving text": "Hi"
+    }
+  };
+  assert.equal(C.allowCheckout([nativePartial]), false);
+  nativePartial.options["For SKU"] = "SKU-1";
+  assert.equal(C.allowCheckout([knife(101), nativePartial]), true);
+  nativePartial.options.Phone = "555-01";
+  assert.equal(C.allowCheckout([nativePartial]), false);
+});
+
+test("checkout entry words are recognized and shopping words are not", function () {
+  assert.equal(C.isCheckoutIntent("/checkout", ""), true);
+  assert.equal(C.isCheckoutIntent("/checkout/payment", "Continue"), true);
+  assert.equal(C.isCheckoutIntent("", "Checkout"), true);
+  assert.equal(C.isCheckoutIntent("", "Place order"), true);
+  assert.equal(C.isCheckoutIntent("/products", "Continue shopping"), false);
+  assert.equal(C.isCheckoutIntent("", "Yes, add engraving"), false);
+  assert.equal(C.isCheckoutIntent("", "Return to shopping"), false);
+});
+
+function sdkAdapter(items) {
+  const cart = { items: JSON.parse(JSON.stringify(items)) };
+  const api = {
+    cart: cart,
+    adds: [],
+    removedIds: [],
+    get: function (cb) { cb({ items: JSON.parse(JSON.stringify(cart.items)) }); },
+    add: function (payload, cb) {
+      api.adds.push(JSON.parse(JSON.stringify(payload)));
+      assert.equal(payload.price, undefined);
+      assert.equal(payload.selectedPrice, undefined);
+      const incoming = JSON.stringify(C.norm(payload.options || {}));
+      let merged = false;
+      cart.items.forEach(function (it) {
+        if (merged || !it.product || it.product.id !== payload.id) return;
+        if (JSON.stringify(C.norm(it.options || {})) === incoming) {
+          it.quantity = (it.quantity || 0) + payload.quantity;
+          merged = true;
+        }
+      });
+      if (!merged) {
+        const sku = payload.id === C.ENGRAVE_ID ? C.ENGRAVE_SKU : C.BOARD_SKU;
+        cart.items.push({
+          product: { id: payload.id, sku: sku, name: sku, price: payload.id === C.ENGRAVE_ID ? 15 : 12 },
+          quantity: payload.quantity,
+          options: payload.options || {}
+        });
+      }
+      cb(true);
+    },
+    remove: function (index, cb) {
+      const it = cart.items[index];
+      api.removedIds.push(it && it.product && it.product.id);
+      cart.items.splice(index, 1);
+      cb(true);
+    }
+  };
+  return api;
+}
+
+test("merged blanks and a cart refresh do not drop the parent items", async function () {
+  const adapter = sdkAdapter([knife(101), knife(202), blank(1)]);
+  adapter.add({ id: C.ENGRAVE_ID, quantity: 1 }, function () {});
+  assert.equal(adapter.cart.items.filter(C.isEngrave).length, 1);
+  assert.equal(adapter.cart.items.filter(C.isEngrave)[0].quantity, 2);
+  assert.equal(C.allowCheckout(adapter.cart.items), false);
+  const first = await run(C.runKnife, adapter, { forSku: "SKU-1", itemName: "Knife One", fields: fields({ engraving_text: "AAA" }) });
+  assert.equal(first.ok, true);
+  let refreshed = null;
+  adapter.get(function (cart) { refreshed = cart; });
+  assert.equal(C.allowCheckout(refreshed.items), false);
+  assert.ok(refreshed.items.filter(C.isEngrave).every(function (line) { return line.quantity === 1; }));
+  const second = await run(C.runKnife, adapter, {
+    forSku: "SKU-2",
+    itemName: "Knife Two",
+    fields: fields({ engraving_text: "BBB", placement: "Handle" })
+  });
+  assert.equal(second.ok, true);
+  adapter.get(function (cart) { refreshed = cart; });
+  assert.equal(C.allowCheckout(refreshed.items), true);
+  assert.deepEqual(refreshed.items.filter(function (it) { return !C.isEngrave(it); }).map(function (it) { return it.product.id; }), [101, 202]);
+  assert.ok(adapter.removedIds.every(function (id) { return id === C.ENGRAVE_ID; }));
+  const bySku = {};
+  refreshed.items.filter(C.isEngrave).forEach(function (line) {
+    bySku[C.readOptions(line)["For SKU"]] = C.readOptions(line)["Engraving text"];
+  });
+  assert.equal(bySku["SKU-1"], "AAA");
+  assert.equal(bySku["SKU-2"], "BBB");
 });
 
 test("storefront source and bundle do not send browser mail", function () {
@@ -277,7 +382,8 @@ test("storefront source and bundle do not send browser mail", function () {
   assert.ok(bundle.startsWith("/* bc-engrave-e v1.0.29 2026-11-06"));
   assert.ok(bundle.includes("BC instructions v"));
   assert.ok(bundle.includes("For SKU"));
-  assert.ok(bundle.includes(C.FULFILLMENT_NOTE));
+  assert.ok(bundle.includes("OnPageLoad"));
+  assert.ok(bundle.includes("allowCheckout"));
   assert.ok(bundle.includes("whole-tree category qualification"));
   assert.ok(bundle.includes('placeholder",T'));
   const check = spawnSync(process.execPath, ["--check", path.join(root, "bc-engrave-e.min.js")], { encoding: "utf8" });

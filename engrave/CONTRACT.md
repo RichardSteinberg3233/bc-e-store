@@ -163,9 +163,33 @@ Write the file only when `paymentStatus` is `PAID` and at least one engraving li
 
 The parent Gmail routine sends `message` only when `paymentStatus` is `PAID` and `dispatchState` is `queued`, then sets `dispatchState` to `sent`. A second claim sends nothing. There is no SMTP client in this repo. Reference implementation: `engrave/notify/queue_contract.py`. The box watcher is not modified from here.
 
+The storefront blocks the standard checkout pages and the checkout, place-order, and pay buttons while any engraving line fails the same checks the watcher uses: `BC instructions v` = `1`, non-empty `For SKU`, name, phone with at least 7 digits, a font or a custom font, placement, text (knife: engraving text or what to engrave; board: engraving text or description), and instructions when placement begins with "Other". One finished line does not excuse a blank line. `Ecwid.Cart.canGotoCheckout` only reports the store's terms checkbox. It cannot take this rule. There is no documented call that makes Ecwid refuse payment.
+
+Because the twelve new options are optional in the catalog, Ecwid itself will add a direct product, cart, or category purchase of `ENGRAVE` with those fields empty and will take payment for it. The script is not a server-side payment gate. It listens for `Ecwid.OnPageLoad` (navigation started) and `Ecwid.OnPageLoaded`, and it stops a checkout click until `Ecwid.Cart.get` shows every engraving line complete. That covers the normal storefront path after this file is the one the page loads.
+
+These paths can still create an incomplete paid engraving line:
+
+- This file is not the script on the live page. The live loader is still `@v1.0.28`.
+- The storefront script fails to load or has not reached `Ecwid.OnAPILoaded` before the shopper pays.
+- A wallet or PayPal button inside a cross-origin frame does not deliver the click to the page, and the order goes straight to `ORDER_CONFIRMATION`. That event is after payment. The script does not redirect it.
+- `OnPageLoad` tells the script the page changed. It does not cancel the change. `openPage("cart")` runs after the callback. A payment request that finishes before that redirect is not stopped.
+- An order created in Ecwid admin or by the REST API never runs this script.
+
+The watcher skipping an incomplete order stops the engraving email. It does not void the payment. The sender stays paused until a storefront test order is complete and the email is delivered once.
+
+## Live loader
+
+This repository does not contain the storefront loader or a theme. The live homepage has one script tag, immediately before `</body>`:
+
+```html
+<script src="https://cdn.jsdelivr.net/gh/RichardSteinberg3233/bc-e-store@v1.0.28/bc-engrave-e.min.js" onerror="var s=document.createElement('script');s.src=this.src.replace('//cdn.','//fastly.');document.body.appendChild(s)"></script>
+```
+
+The only change is `@v1.0.28` to `@v1.0.29` in that `src`. The `onerror` fallback copies `this.src`, so it follows the new version. Do not replace the surrounding inline scripts. Do not publish that change until the coordinator runs the storefront test.
+
 ## Deploy and tag
 
-Do this only after the catalog GET/PUT above has been verified. Do not tag or change the live script URL before that. Publishing the script first makes a finished form try to save options that do not exist; the add fails and checkout stays blocked.
+Do this only when the coordinator is ready to load the new script. The catalog options are already on the products. Publishing still waits on a storefront test order, because the live page is `@v1.0.28` and optional catalog fields do not stop Ecwid from taking payment by themselves.
 
 1. Merge the reviewed branch.
 2. Confirm the box queue writes this schema and will not send a second time for the same file. It must ignore lines that lack `BC instructions v` = `1`.

@@ -195,7 +195,7 @@
     if (!fontOk(fields)) errors.push("font");
     var placement = cleanPlacement(fields.placement);
     if (!placement) errors.push("placement");
-    if (placement === OTHER_PLACEMENT && !trim(fields.instructions)) errors.push("instructions");
+    if (/^other\b/i.test(placement) && !trim(fields.instructions)) errors.push("instructions");
     if (role === "board") {
       if (BOARD_DISPLAY_PRICES[fields.board_size] == null) errors.push("size");
       if (!trim(fields.engraving_text) && !trim(fields.description)) errors.push("text");
@@ -282,8 +282,20 @@
     if (!isEngrave(it) && !isBoard(it)) return true;
     var map = readOptions(it);
     if (!versioned(map)) return false;
+    if (!oneLine(map[FOR_SKU])) return false;
     var role = isBoard(it) ? "board" : "knife";
     return validate(role, fieldsFromOptions(map)).ok;
+  }
+
+  function allowCheckout(items) {
+    return incomplete(items).length === 0;
+  }
+
+  function isCheckoutIntent(href, text) {
+    var link = String(href || "");
+    var label = String(text || "").replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "");
+    if (/\/checkout(\/|$|\?|#)/i.test(link)) return true;
+    return /^(checkout|check out|go to checkout|place order|pay now|continue to payment)$/i.test(label);
   }
 
   function incomplete(items) {
@@ -440,27 +452,85 @@
     return payload;
   }
 
-  function uniqDesc(indexes) {
-    var seen = {};
-    var out = [];
-    indexes.forEach(function (index) {
-      if (seen[index]) return;
-      seen[index] = 1;
-      out.push(index);
-    });
-    out.sort(function (a, b) { return b - a; });
-    return out;
+  function identityOf(it) {
+    var p = productOf(it);
+    var id = p.id != null ? p.id : it.productId;
+    return id + "|" + JSON.stringify(norm(readOptions(it)));
   }
 
-  function removeAll(adapter, indexes, done) {
-    function step(pos) {
-      if (pos >= indexes.length) return done(true);
-      adapter.remove(indexes[pos], function (success) {
-        if (success === false) return done(false);
-        step(pos + 1);
+  function sameTarget(current, desired, isTarget) {
+    function sigs(list) {
+      return (list || []).filter(isTarget).map(lineSig).sort();
+    }
+    var left = sigs(current);
+    var right = sigs(desired);
+    if (left.length !== right.length) return false;
+    for (var i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+    return true;
+  }
+
+  /* One cart change per fresh Cart.get.
+     addProduct is used only for an option set that is not already in the cart,
+     so a same-option quantity combine cannot swallow a different line.
+     removeProduct deletes the whole position at one index from that get.
+     A wrong quantity is corrected by removing that position, then adding it
+     back on the next get. Parent products are not targets. */
+  function nextCartFix(current, desired, isTarget, productId) {
+    var have = [];
+    var want = [];
+    (current || []).forEach(function (it, index) {
+      if (isTarget(it)) have.push({ index: index, id: identityOf(it), qty: it.quantity || 0, item: it });
+    });
+    (desired || []).forEach(function (it) {
+      if (isTarget(it)) want.push({ id: identityOf(it), qty: it.quantity || 0, item: it });
+    });
+    var haveById = {};
+    have.forEach(function (row) { haveById[row.id] = row; });
+    var wantById = {};
+    want.forEach(function (row) { wantById[row.id] = row; });
+    var missing = null;
+    Object.keys(wantById).forEach(function (id) {
+      if (!haveById[id] && !missing) missing = wantById[id];
+    });
+    if (missing) {
+      return { type: "add", payload: addPayload(productId, missing.qty, readOptions(missing.item)) };
+    }
+    var removeIndex = -1;
+    have.forEach(function (row) {
+      var wanted = wantById[row.id];
+      if (!wanted || wanted.qty !== row.qty) removeIndex = row.index;
+    });
+    if (removeIndex >= 0) return { type: "remove", index: removeIndex };
+    return null;
+  }
+
+  function converge(adapter, desiredItems, isTarget, productId, cb) {
+    var steps = 0;
+    var acted = false;
+    function tick() {
+      if (steps++ > 16) return cb({ ok: false, error: "converge-failed" });
+      adapter.get(function (cart) {
+        var items = (cart && cart.items) || [];
+        if (sameTarget(items, desiredItems, isTarget)) {
+          return cb({ ok: true, unchanged: !acted, cart: cart });
+        }
+        var action = nextCartFix(items, desiredItems, isTarget, productId);
+        if (!action) return cb({ ok: false, error: "converge-failed" });
+        acted = true;
+        if (action.type === "add") {
+          adapter.add(action.payload, function (success) {
+            if (!success) return cb({ ok: false, error: "add-failed" });
+            tick();
+          });
+          return;
+        }
+        adapter.remove(action.index, function (success) {
+          if (success === false) return cb({ ok: false, error: "remove-failed" });
+          tick();
+        });
       });
     }
-    step(0);
+    tick();
   }
 
   function runKnife(adapter, job, cb) {
@@ -468,47 +538,7 @@
       var before = (cart && cart.items) || [];
       var plan = applyKnife(before, job);
       if (plan.error) return cb({ ok: false, error: plan.error, errors: plan.errors });
-      if (sameLines(before, plan.items)) return cb({ ok: true, unchanged: true });
-      adapter.add(addPayload(ENGRAVE_ID, 1, plan.options), function (success) {
-        if (!success) return cb({ ok: false, error: "add-failed" });
-        adapter.get(function (cart2) {
-          var items = (cart2 && cart2.items) || [];
-          var remove = [];
-          var kept = 0;
-          items.forEach(function (it, index) {
-            if (!isEngrave(it)) return;
-            var map = readOptions(it);
-            if (mapsEqual(map, plan.options)) {
-              kept++;
-              if (kept > 1) remove.push(index);
-              return;
-            }
-            if (versioned(map) && (map[FOR_SKU] || "") === plan.forSku) remove.push(index);
-          });
-          var desiredBlank = blankQty(plan.items);
-          var currentBlank = 0;
-          var blankIndexes = [];
-          items.forEach(function (it, index) {
-            if (!isEngrave(it) || versioned(readOptions(it))) return;
-            currentBlank += it.quantity || 0;
-            blankIndexes.push(index);
-          });
-          if (currentBlank !== desiredBlank) {
-            blankIndexes.forEach(function (index) { remove.push(index); });
-          }
-          remove = uniqDesc(remove);
-          removeAll(adapter, remove, function (removed) {
-            if (!removed) return cb({ ok: false, error: "remove-failed" });
-            if (currentBlank === desiredBlank || desiredBlank <= 0) {
-              return adapter.get(function (done) { cb({ ok: true, cart: done }); });
-            }
-            adapter.add(addPayload(ENGRAVE_ID, desiredBlank, null), function (restored) {
-              if (!restored) return cb({ ok: false, error: "blank-restore-failed" });
-              adapter.get(function (done) { cb({ ok: true, cart: done }); });
-            });
-          });
-        });
-      });
+      converge(adapter, plan.items, isEngrave, ENGRAVE_ID, cb);
     });
   }
 
@@ -517,36 +547,7 @@
       var before = (cart && cart.items) || [];
       var plan = applyBoard(before, spec);
       if (plan.error) return cb({ ok: false, error: plan.error, errors: plan.errors });
-      if (sameLines(before, plan.items)) return cb({ ok: true, unchanged: true });
-      function finish(addedOk) {
-        if (plan.options && !addedOk) return cb({ ok: false, error: "add-failed" });
-        adapter.get(function (cart2) {
-          var items = (cart2 && cart2.items) || [];
-          var sku = plan.forSku || "";
-          var claimUnscoped = !boardOwned(before, sku);
-          var remove = [];
-          var kept = 0;
-          items.forEach(function (it, index) {
-            if (!isBoard(it)) return;
-            var map = readOptions(it);
-            var owner = map[FOR_SKU] || "";
-            var mine = owner === sku || (owner === "" && claimUnscoped);
-            if (!mine) return;
-            if (plan.options && mapsEqual(map, plan.options) && (it.quantity || 0) === 1) {
-              kept++;
-              if (kept > 1) remove.push(index);
-              return;
-            }
-            remove.push(index);
-          });
-          removeAll(adapter, uniqDesc(remove), function (removed) {
-            if (!removed) return cb({ ok: false, error: "remove-failed" });
-            adapter.get(function (done) { cb({ ok: true, cart: done }); });
-          });
-        });
-      }
-      if (!plan.options) return finish(true);
-      adapter.add(addPayload(BOARD_ID, 1, plan.options), finish);
+      converge(adapter, plan.items, isBoard, BOARD_ID, cb);
     });
   }
 
@@ -615,6 +616,8 @@
     fieldsForSku: fieldsForSku,
     authoritativeFields: authoritativeFields,
     incomplete: incomplete,
+    allowCheckout: allowCheckout,
+    isCheckoutIntent: isCheckoutIntent,
     applyKnife: applyKnife,
     applyBoard: applyBoard,
     runKnife: runKnife,

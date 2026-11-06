@@ -466,7 +466,7 @@
     var links = "";
     if (knife) links += '<p><a href="#" data-bc-cat="' + KNIFE_CAT + '">Finish the knife engraving form</a></p>';
     if (board) links += '<p><a href="#" data-bc-cat="' + BOARD_CAT + '">Finish the cutting board engraving form</a></p>';
-    box.innerHTML = "<p><b>Engraving instructions are not on the cart yet.</b> Finish the form, or remove the extra engraving line, before checkout. The engraver only receives what is saved on each engraving line.</p>" + links;
+    box.innerHTML = "<p><b>Every engraving line needs a finished questionnaire before payment.</b> One finished line does not cover a blank one. Finish each form, or remove the extra engraving line.</p>" + links;
     box.addEventListener("click", function (event) {
       var link = event.target && event.target.closest && event.target.closest("[data-bc-cat]");
       if (!link) return;
@@ -478,18 +478,37 @@
 
   function guard(type) {
     ecGet(function (cart) {
-      var missing = C.incomplete(cart.items || []);
-      if (!missing.length) {
+      var items = (cart && cart.items) || [];
+      if (C.allowCheckout(items)) {
         var old = d.getElementById("bc-engr-hold");
         if (old) old.remove();
         return;
       }
+      var missing = C.incomplete(items);
       if (C.isCheckoutStep(type)) {
-        window.Ecwid.openPage("cart");
+        if (window.Ecwid && window.Ecwid.openPage) window.Ecwid.openPage("cart");
         return;
       }
       if (type === "CART") holdBanner(missing);
     });
+  }
+
+  function watchPage(pageInfo) {
+    var type = pageInfo && pageInfo.type || "";
+    var id = pageInfo && pageInfo.categoryId || 0;
+    closePop("bc-engr-pop");
+    closePop("bc-board-pop");
+    if (/^(PRODUCT|CATEGORY|SEARCH)$/.test(type) && id !== KNIFE_CAT && id !== BOARD_CAT && id !== MAIL_CAT) {
+      ls("bc_engr_last_shop", location.href);
+      ls("bc_board_last_shop", location.href);
+    }
+    if (type === "CATEGORY" && id === KNIFE_CAT) [0, 300, 1200].forEach(function (ms) { setTimeout(function () { ecGet(renderKnife); }, ms); });
+    if (type === "CATEGORY" && id === BOARD_CAT) [0, 300, 1200].forEach(function (ms) { setTimeout(function () { ecGet(renderBoard); }, ms); });
+    if (type === "CART") [300, 1200].forEach(function (ms) { setTimeout(continueShopping, ms); });
+    if (type === "CART" || C.isCheckoutStep(type)) {
+      [0, 800, 2000].forEach(function (ms) { setTimeout(function () { ecGet(syncNote); }, ms); });
+      guard(type);
+    }
   }
 
   function knifePop(item) {
@@ -698,24 +717,33 @@
       onKnifeCart(cart);
       onBoardCart(cart);
     });
-    window.Ecwid.OnPageLoaded.add(function (pageInfo) {
-      var type = pageInfo && pageInfo.type || "";
-      var id = pageInfo && pageInfo.categoryId || 0;
-      closePop("bc-engr-pop");
-      closePop("bc-board-pop");
-      if (/^(PRODUCT|CATEGORY|SEARCH)$/.test(type) && id !== KNIFE_CAT && id !== BOARD_CAT && id !== MAIL_CAT) {
-        ls("bc_engr_last_shop", location.href);
-        ls("bc_board_last_shop", location.href);
-      }
-      if (type === "CATEGORY" && id === KNIFE_CAT) [0, 300, 1200].forEach(function (ms) { setTimeout(function () { ecGet(renderKnife); }, ms); });
-      if (type === "CATEGORY" && id === BOARD_CAT) [0, 300, 1200].forEach(function (ms) { setTimeout(function () { ecGet(renderBoard); }, ms); });
-      if (type === "CART") [300, 1200].forEach(function (ms) { setTimeout(continueShopping, ms); });
-      if (type === "CART" || C.isCheckoutStep(type)) {
-        [0, 800, 2000].forEach(function (ms) { setTimeout(function () { ecGet(syncNote); }, ms); });
-        guard(type);
-      }
-    });
+    window.Ecwid.OnPageLoaded.add(watchPage);
+    if (window.Ecwid.OnPageLoad) window.Ecwid.OnPageLoad.add(watchPage);
   }
+
+  var allowCheckoutClick = false;
+  d.addEventListener("click", function (event) {
+    if (allowCheckoutClick) return;
+    var node = event.target && event.target.closest && event.target.closest("a,button,input");
+    if (!node) return;
+    if (node.closest("#bc-engr-hold, #bc-engr-pop, #bc-board-pop, #bc-board-checkout, .bc-engr-ret, .bc-board-ret")) return;
+    var href = node.getAttribute("href") || "";
+    var label = node.value || node.textContent || "";
+    if (!C.isCheckoutIntent(href, label)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    ecGet(function (cart) {
+      var items = (cart && cart.items) || [];
+      if (!C.allowCheckout(items)) {
+        holdBanner(C.incomplete(items));
+        if (window.Ecwid && window.Ecwid.openPage) window.Ecwid.openPage("cart");
+        return;
+      }
+      allowCheckoutClick = true;
+      try { node.click(); }
+      finally { allowCheckoutClick = false; }
+    });
+  }, true);
 
   css("bc-engr-css", KNIFE_CSS);
   css("bc-board-css", BOARD_CSS);
