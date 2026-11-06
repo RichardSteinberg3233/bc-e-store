@@ -441,7 +441,7 @@ test("storefront source and bundle do not send browser mail", function () {
     assert.equal(source.toLowerCase().includes("formsubmit"), false);
   });
   assert.equal(C.browserSendsEmail, false);
-  assert.ok(bundle.startsWith("/* bc-engrave-e v1.0.29 2026-11-06"));
+  assert.ok(bundle.startsWith("/* bc-engrave-e v1.0.30 2026-11-06"));
   assert.ok(bundle.includes("BC instructions v"));
   assert.ok(bundle.includes("For SKU"));
   assert.ok(bundle.includes("OnPageLoad"));

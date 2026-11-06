@@ -1,4 +1,4 @@
-/* bc-engrave-e v1.0.29 cart/order contract.
+/* bc-engrave-e v1.0.30 cart/order contract.
    Pure logic. No Ecwid calls, no network, no email.
    Browser mail is not implemented here. The paid-order queue is the only sender. */
 (function (factory) {
