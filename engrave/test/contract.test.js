@@ -410,6 +410,27 @@ test("native required fields are present on a new engraving add", function () {
   assert.equal(boardText.Font, "1 Allura");
 });
 
+test("continue to checkout does not add engraving when the questionnaire is incomplete", function () {
+  const empty = C.validate("knife", { placement: "Blade" });
+  assert.equal(empty.ok, false);
+  assert.ok(empty.errors.includes("name"));
+  assert.ok(empty.errors.includes("phone"));
+  assert.ok(empty.errors.includes("font"));
+  assert.ok(empty.errors.includes("text"));
+  assert.ok(C.explain("knife", empty.errors).length > 0);
+  const textOnly = C.validate("knife", { placement: "Blade", engraving_text: "TEST DO NOT ENGRAVE" });
+  assert.equal(textOnly.ok, false);
+  assert.ok(textOnly.errors.includes("font"));
+  assert.ok(textOnly.errors.includes("name"));
+  const plan = C.applyKnife([knife(2425)], {
+    forSku: "2425K",
+    itemName: "CRKT Scribe",
+    fields: { placement: "Blade", engraving_text: "TEST DO NOT ENGRAVE" }
+  });
+  assert.equal(plan.error, "invalid");
+  assert.equal(plan.items.filter(C.isEngrave).length, 0);
+});
+
 test("storefront source and bundle do not send browser mail", function () {
   const build = spawnSync(process.execPath, [path.join(root, "engrave", "build.js")], { encoding: "utf8" });
   assert.equal(build.status, 0, build.stderr);
@@ -420,11 +441,12 @@ test("storefront source and bundle do not send browser mail", function () {
     assert.equal(source.toLowerCase().includes("formsubmit"), false);
   });
   assert.equal(C.browserSendsEmail, false);
-  assert.ok(bundle.startsWith("/* bc-engrave-e v1.0.29 2026-11-06"));
+  assert.ok(bundle.startsWith("/* bc-engrave-e v1.0.30 2026-11-06"));
   assert.ok(bundle.includes("BC instructions v"));
   assert.ok(bundle.includes("For SKU"));
   assert.ok(bundle.includes("OnPageLoad"));
-  assert.ok(bundle.includes("allowCheckout"));
+  assert.ok(storefront.includes("a.bc-mailin-checkout-btn"));
+  assert.ok(storefront.includes("stopImmediatePropagation"));
   assert.ok(bundle.includes("whole-tree category qualification"));
   assert.ok(bundle.includes('placeholder",T'));
   const check = spawnSync(process.execPath, ["--check", path.join(root, "bc-engrave-e.min.js")], { encoding: "utf8" });

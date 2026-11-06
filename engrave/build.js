@@ -6,7 +6,7 @@ const path = require("path");
 
 const root = path.join(__dirname, "..");
 const legacy = path.join(__dirname, "legacy");
-const header = "/* bc-engrave-e v1.0.29 2026-11-06 | per-item engraving instructions on each cart line; browser email removed; paid-order queue is the only email path */\n";
+const header = "/* bc-engrave-e v1.0.30 2026-11-06 | per-item engraving instructions on each cart line; Continue to checkout stays on an incomplete form; browser email removed; paid-order queue is the only email path */\n";
 
 function read(name) {
   return fs.readFileSync(path.join(legacy, name), "utf8");
