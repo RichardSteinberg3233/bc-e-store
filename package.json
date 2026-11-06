@@ -1,0 +1,8 @@
+{
+  "name": "bc-e-store",
+  "private": true,
+  "scripts": {
+    "build": "node engrave/build.js",
+    "test": "node --test engrave/test/contract.test.js && python3 engrave/notify/test_queue.py"
+  }
+}
