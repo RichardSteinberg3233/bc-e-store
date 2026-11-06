@@ -18,26 +18,57 @@ Each engraved surface is its own cart line. The questionnaire is that line's pro
 
 A line is complete only when it has `BC instructions v` = `1` and the required answers below. The browser does not send mail.
 
-## Catalog options to add
+## Ops: required flags before this script is published
 
-Add these options to **both** products. `required` is `false` on every one of them. Do not set a price modifier. Do not send `name` or `price` in the product update.
+The twelve fields already exist. Do not add fields, rename them, change their types, or touch product names, prices, or `Engraving size`. Flip `required` only. This repo does not call the catalog API.
 
-| Option name | Ecwid type | Required in catalog | Required before checkout |
-| --- | --- | --- | --- |
-| `BC instructions v` | `TEXTFIELD` | false | Set to `1` by the script when the form is accepted |
-| `For SKU` | `TEXTFIELD` | false | Parent item SKU |
-| `Item` | `TEXTAREA` | false | Parent item name |
-| `Name` | `TEXTFIELD` | false | Shopper name |
-| `Phone` | `TEXTFIELD` | false | At least 7 digits |
-| `Font` | `TEXTFIELD` | false | Specimen name, or blank when a custom font is set |
-| `Custom font` | `TEXTFIELD` | false | Free-text font, or blank when a specimen is chosen |
-| `Placement` | `TEXTFIELD` | false | Knife: `Blade` or `Handle`. Board: `Top`, `Bottom`, or `Other (describe in Instructions)` |
-| `Engraving text` | `TEXTAREA` | false | Knife: this or `What to engrave`. Board: this or `Description` |
-| `What to engrave` | `TEXTAREA` | false | Knife description field |
-| `Description` | `TEXTAREA` | false | Board description field |
-| `Instructions` | `TEXTAREA` | false | Required only when placement is `Other (describe in Instructions)` |
+Yes opens the questionnaire and does not add a charge. The charged `ENGRAVE` or `BOARD-ENGRAVE` line is added only after the form is complete. Ecwid enforces `required` at add time, including a direct product, cart, or category add with this script unavailable. Required means the value is non-empty. It does not check that the version is exactly `1`, that the phone has 7 digits, or that the word Other includes a place.
 
-Font is satisfied by `Font` or `Custom font`. Both may be present. Empty and `Select a font` do not count. Empty and `Select placement` do not count.
+| Option name | Type, unchanged | `required` |
+| --- | --- | --- |
+| `BC instructions v` | `TEXTFIELD` | true. The script writes `1`. |
+| `For SKU` | `TEXTFIELD` | true. Parent part number. |
+| `Item` | `TEXTAREA` | false |
+| `Name` | `TEXTFIELD` | true |
+| `Phone` | `TEXTFIELD` | true. Non-empty only. The script and watcher still require 7 digits. |
+| `Font` | `TEXTFIELD` | true. One resolved value: the specimen, the custom font, or `specimen / custom`. |
+| `Custom font` | `TEXTFIELD` | false. A note. It is not an alternative to `Font`. |
+| `Placement` | `TEXTFIELD` | true. `Blade`, `Handle`, `Top`, `Bottom`, or `Other: <place>`. |
+| `Engraving text` | `TEXTAREA` | true. The one instruction. The script copies literal text, otherwise "what to engrave" or the board description, into this field. |
+| `What to engrave` | `TEXTAREA` | false |
+| `Description` | `TEXTAREA` | false |
+| `Instructions` | `TEXTAREA` | false. Kept as a note. An Other placement is stored in required `Placement` as `Other: <instructions>`. |
+
+`Engraving size` on `BOARD-ENGRAVE` stays required. Leave its choices and modifiers as they are.
+
+A line already in a cart is not revalidated when these flags change. An old blank `$15` line can still be purchased until it is removed or the form is saved onto it. Saving consumes one old blank line so it is not charged twice. Any blank that remains blocks the standard checkout path and, if it is paid, stays in the watcher pending file with an alert. The watcher does not send that order and does not fill the missing fields from comments or extra fields.
+
+```json
+{
+  "options": [
+    { "type": "TEXTFIELD", "name": "BC instructions v", "required": true },
+    { "type": "TEXTFIELD", "name": "For SKU", "required": true },
+    { "type": "TEXTAREA", "name": "Item", "required": false },
+    { "type": "TEXTFIELD", "name": "Name", "required": true },
+    { "type": "TEXTFIELD", "name": "Phone", "required": true },
+    { "type": "TEXTFIELD", "name": "Font", "required": true },
+    { "type": "TEXTFIELD", "name": "Custom font", "required": false },
+    { "type": "TEXTFIELD", "name": "Placement", "required": true },
+    { "type": "TEXTAREA", "name": "Engraving text", "required": true },
+    { "type": "TEXTAREA", "name": "What to engrave", "required": false },
+    { "type": "TEXTAREA", "name": "Description", "required": false },
+    { "type": "TEXTAREA", "name": "Instructions", "required": false }
+  ]
+}
+```
+
+For `ENGRAVE`, PUT only `options` with that list. For `BOARD-ENGRAVE`, GET first and PUT `options` as the existing `Engraving size` object, unchanged, followed by that list. Do not send `name` or `price`.
+
+`PUT /api/v3/142565005/products/865178331`
+
+`PUT /api/v3/142565005/products/868564107`
+
+Read back both products. Confirm names and prices are unchanged, `Engraving size` is still required with the same modifiers, and the seven fields above are required.
 
 `BOARD-ENGRAVE` already has a required `SELECT` named `Engraving size`. Leave that option, its choices, and its price modifiers as they are:
 
@@ -52,49 +83,7 @@ Font is satisfied by `Font` or `Custom font`. Both may be present. Empty and `Se
 | `8x8` | +48 ABSOLUTE | $60 |
 | `Larger than 8x8` | +63 ABSOLUTE | $75 |
 
-The script sends the choice text (`4x4`, not `4x4 - $20`). It does not send `price` or `selectedPrice`.
-
-Catalog `required: false` is deliberate. `Yes, add engraving` on a knife calls `Ecwid.Cart.addProduct({ id: 865178331, quantity: 1 })` with no options, then opens the form. A catalog-required option would reject that add. The script rejects checkout while any `ENGRAVE` or `BOARD-ENGRAVE` line is missing `BC instructions v` = `1` or fails the checks above.
-
-### PUT bodies
-
-Private token stays on the box. Do not put it in the browser or this repo.
-
-`ENGRAVE` currently has no options. PUT only `options`:
-
-```json
-{
-  "options": [
-    { "type": "TEXTFIELD", "name": "BC instructions v", "required": false },
-    { "type": "TEXTFIELD", "name": "For SKU", "required": false },
-    { "type": "TEXTAREA", "name": "Item", "required": false },
-    { "type": "TEXTFIELD", "name": "Name", "required": false },
-    { "type": "TEXTFIELD", "name": "Phone", "required": false },
-    { "type": "TEXTFIELD", "name": "Font", "required": false },
-    { "type": "TEXTFIELD", "name": "Custom font", "required": false },
-    { "type": "TEXTFIELD", "name": "Placement", "required": false },
-    { "type": "TEXTAREA", "name": "Engraving text", "required": false },
-    { "type": "TEXTAREA", "name": "What to engrave", "required": false },
-    { "type": "TEXTAREA", "name": "Description", "required": false },
-    { "type": "TEXTAREA", "name": "Instructions", "required": false }
-  ]
-}
-```
-
-`PUT /api/v3/142565005/products/865178331`
-
-For `BOARD-ENGRAVE`, GET the product first and PUT `options` as the **full list**: the existing `Engraving size` object, unchanged, followed by the twelve objects above.
-
-`PUT /api/v3/142565005/products/868564107`
-
-Do not retype `Engraving size` from this document. Copy it from the GET. After both PUTs, GET again and confirm:
-
-- `ENGRAVE` name is still `ENGRAVE - BC Knife - Service - Engraving`, price is still 15
-- `BOARD-ENGRAVE` name is still `Cutting Board Engraving`, price is still 12
-- `Engraving size` is still required and its modifiers still match the table
-- the twelve new options exist, are not required, and have no price modifier
-
-No published "update a single option" call was found. Send the full `options` list you want stored.
+The script sends the choice text (`4x4`, not `4x4 - $20`). It does not send `price` or `selectedPrice`. Copy `Engraving size` from the GET. Do not retype it.
 
 ## Storefront API actually used
 
@@ -165,17 +154,16 @@ The parent Gmail routine sends `message` only when `paymentStatus` is `PAID` and
 
 The storefront blocks the standard checkout pages and the checkout, place-order, and pay buttons while any engraving line fails the same checks the watcher uses: `BC instructions v` = `1`, non-empty `For SKU`, name, phone with at least 7 digits, a font or a custom font, placement, text (knife: engraving text or what to engrave; board: engraving text or description), and instructions when placement begins with "Other". One finished line does not excuse a blank line. `Ecwid.Cart.canGotoCheckout` only reports the store's terms checkbox. It cannot take this rule. There is no documented call that makes Ecwid refuse payment.
 
-Because the twelve new options are optional in the catalog, Ecwid itself will add a direct product, cart, or category purchase of `ENGRAVE` with those fields empty and will take payment for it. The script is not a server-side payment gate. It listens for `Ecwid.OnPageLoad` (navigation started) and `Ecwid.OnPageLoaded`, and it stops a checkout click until `Ecwid.Cart.get` shows every engraving line complete. That covers the normal storefront path after this file is the one the page loads.
+After the required flags above are on the products, Ecwid rejects a new add that leaves `Font`, `Placement`, `Engraving text`, `For SKU`, `Name`, `Phone`, or `BC instructions v` empty. That includes a direct product, cart, or category add while this script is unavailable. The script also refuses to add until those values are resolved. `Ecwid.OnPageLoad` and `Ecwid.OnPageLoaded` still return a shopper to the cart when an older blank line is already in the cart.
 
-These paths can still create an incomplete paid engraving line:
+These paths can still produce an incomplete paid engraving line:
 
-- This file is not the script on the live page. The live loader is still `@v1.0.28`.
-- The storefront script fails to load or has not reached `Ecwid.OnAPILoaded` before the shopper pays.
-- A wallet or PayPal button inside a cross-origin frame does not deliver the click to the page, and the order goes straight to `ORDER_CONFIRMATION`. That event is after payment. The script does not redirect it.
-- `OnPageLoad` tells the script the page changed. It does not cancel the change. `openPage("cart")` runs after the callback. A payment request that finishes before that redirect is not stopped.
-- An order created in Ecwid admin or by the REST API never runs this script.
+- A line already in the cart before the required flags change. Ecwid does not revalidate it.
+- The required value is non-empty but not a real answer: version other than `1`, a phone shorter than 7 digits, or Placement equal to `Other` with no place after the colon. The script will not add those. A direct add can. The watcher keeps that paid order pending, with an alert, and does not send.
+- The live loader is still `@v1.0.28`, so the form still adds the old blank line until this file is published.
+- An order created in Ecwid admin or by the REST API does not pass the storefront required check.
 
-The watcher skipping an incomplete order stops the engraving email. It does not void the payment. The sender stays paused until a storefront test order is complete and the email is delivered once.
+The watcher does not skip an incomplete paid order and does not backfill it. The sender stays paused until a storefront test order is complete and the email is delivered once.
 
 ## Live loader
 
@@ -189,7 +177,7 @@ The only change is `@v1.0.28` to `@v1.0.29` in that `src`. The `onerror` fallbac
 
 ## Deploy and tag
 
-Do this only when the coordinator is ready to load the new script. The catalog options are already on the products. Publishing still waits on a storefront test order, because the live page is `@v1.0.28` and optional catalog fields do not stop Ecwid from taking payment by themselves.
+Do this only when the coordinator is ready to load the new script, and only after the required-flag read-back above. Publishing still waits on a storefront test order. The live page is `@v1.0.28`.
 
 1. Merge the reviewed branch.
 2. Confirm the box queue writes this schema and will not send a second time for the same file. It must ignore lines that lack `BC instructions v` = `1`.

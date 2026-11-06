@@ -369,6 +369,47 @@ test("merged blanks and a cart refresh do not drop the parent items", async func
   assert.equal(bySku["SKU-2"], "BBB");
 });
 
+test("native required fields are present on a new engraving add", function () {
+  const required = C.catalogOptions().filter(function (option) { return option.required; }).map(function (option) { return option.name; });
+  assert.deepEqual(required, ["BC instructions v", "For SKU", "Name", "Phone", "Font", "Placement", "Engraving text"]);
+  const plan = C.applyKnife([knife(101)], {
+    forSku: "SKU-1",
+    itemName: "Knife One",
+    fields: fields({
+      provided_font: "",
+      custom_font: "Shop Script",
+      engraving_text: "",
+      what_to_engrave: "Initials on the blade"
+    })
+  });
+  assert.equal(plan.error, undefined);
+  assert.equal(plan.options.Font, "Shop Script");
+  assert.equal(plan.options["Engraving text"], "Initials on the blade");
+  assert.equal(plan.options.Placement, "Blade");
+  const payload = C.addPayload(C.ENGRAVE_ID, 1, plan.options);
+  required.forEach(function (name) {
+    assert.ok(payload.options[name], name);
+  });
+  assert.equal(plan.items.filter(C.isEngrave).length, 1);
+  assert.equal(C.allowCheckout(plan.items), true);
+  const oldBlank = C.applyKnife([knife(101), blank(1)], { forSku: "SKU-1", itemName: "Knife One", fields: fields() });
+  assert.equal(oldBlank.items.filter(C.isEngrave).length, 1);
+  const both = fields({ provided_font: "1 Allura", custom_font: "Shop Script" });
+  assert.equal(C.optionMap(both, { forSku: "SKU-1", role: "knife" }).Font, "1 Allura / Shop Script");
+  const other = C.validate("knife", fields({ placement: C.OTHER_PLACEMENT, instructions: "" }));
+  assert.ok(other.errors.includes("instructions"));
+  const otherSaved = C.optionMap(fields({ placement: C.OTHER_PLACEMENT, instructions: "Lower right" }), { forSku: "SKU-1", role: "knife" });
+  assert.equal(otherSaved.Placement, "Other: Lower right");
+  const boardText = C.optionMap(fields({
+    engraving_text: "",
+    description: "Maple logo",
+    placement: "Top",
+    board_size: "4x4"
+  }), { forSku: "BOARD-1", role: "board" });
+  assert.equal(boardText["Engraving text"], "Maple logo");
+  assert.equal(boardText.Font, "1 Allura");
+});
+
 test("storefront source and bundle do not send browser mail", function () {
   const build = spawnSync(process.execPath, [path.join(root, "engrave", "build.js")], { encoding: "utf8" });
   assert.equal(build.status, 0, build.stderr);
@@ -443,10 +484,12 @@ test("paid queue is the sender and it does not send twice", function () {
 test("catalog contract names stay aligned with the deploy notes", function () {
   const notes = fs.readFileSync(path.join(root, "engrave", "CONTRACT.md"), "utf8");
   C.catalogOptions().forEach(function (option) {
-    assert.equal(option.required, false);
     assert.ok(option.type === "TEXTFIELD" || option.type === "TEXTAREA");
     assert.ok(notes.includes(option.name), option.name);
+    if (option.required) assert.ok(notes.includes('"' + option.name + '"'));
   });
+  assert.equal(C.catalogOptions().filter(function (option) { return option.name === "Custom font"; })[0].required, false);
+  assert.equal(C.catalogOptions().filter(function (option) { return option.name === "Instructions"; })[0].required, false);
   assert.ok(notes.includes("Engraving size"));
   assert.ok(notes.includes("255"));
   assert.ok(notes.includes("v1.0.29"));

@@ -148,6 +148,90 @@ def _section(row):
     return "\n".join(lines)
 
 
+def _digits(value):
+    return sum(ch.isdigit() for ch in str(value or ""))
+
+
+def _placement_ok(value):
+    placement = str(value or "").strip()
+    if not placement:
+        return False
+    low = placement.lower()
+    if low == "other":
+        return False
+    if low.startswith("other") and ":" not in placement:
+        return False
+    return True
+
+
+BOARD_SIZES = {"2x2", "3x3", "4x4", "5x5", "6x6", "7x7", "8x8", "Larger than 8x8"}
+
+
+def line_problems(role, options):
+    problems = []
+    if options.get(VERSION) != VERSION_VALUE:
+        problems.append("version")
+    if not str(options.get("For SKU") or "").strip():
+        problems.append("forSku")
+    if not str(options.get("Name") or "").strip():
+        problems.append("name")
+    if _digits(options.get("Phone")) < 7:
+        problems.append("phone")
+    if not str(options.get("Font") or "").strip():
+        problems.append("font")
+    if not _placement_ok(options.get("Placement")):
+        problems.append("placement")
+    if not str(options.get("Engraving text") or "").strip():
+        problems.append("text")
+    if role == "board" and options.get("Engraving size") not in BOARD_SIZES:
+        problems.append("size")
+    return problems
+
+
+def engraving_rows(order):
+    rows = []
+    for item in order.get("items") or []:
+        role = _role(item)
+        if not role:
+            continue
+        options = option_map(item)
+        row = {
+            "orderItemId": item.get("id"),
+            "role": role,
+            "productId": _product_id(item),
+            "sku": _sku(item),
+            "quantity": item.get("quantity") or 0,
+            "problems": line_problems(role, options),
+        }
+        for option_name, field in TEXT_FIELDS:
+            row[field] = options.get(option_name, "")
+        row["options"] = options
+        rows.append(row)
+    return rows
+
+
+def build_pending(order):
+    rows = engraving_rows(order)
+    return {
+        "schema": SCHEMA,
+        "orderId": order_public_id(order),
+        "paymentStatus": order.get("paymentStatus") or "",
+        "to": TO,
+        "customerEmail": _customer_email(order),
+        "dispatchState": "pending",
+        "alert": [
+            {"orderItemId": row.get("orderItemId"), "forSku": row.get("forSku") or "", "problems": row["problems"]}
+            for row in rows if row["problems"]
+        ],
+        "browserFormSubmit": False,
+        "authority": "server-queue",
+        "orderComments": order.get("orderComments") or "",
+        "extraFields": order.get("extraFields") or {},
+        "items": rows,
+        "message": None,
+    }
+
+
 def build_payload(order):
     items, skipped = instruction_items(order)
     order_id = order_public_id(order)
@@ -183,21 +267,33 @@ def build_payload(order):
 def assess(order):
     if (order.get("paymentStatus") or "") != "PAID":
         return "not_paid"
-    items, _skipped = instruction_items(order)
-    if not items:
+    rows = engraving_rows(order)
+    if not rows:
         return "no_instructions"
+    if any(row["problems"] for row in rows):
+        return "pending"
     return "ready"
 
 
 def enqueue(order, outbox):
-    """Write the queue file once. An existing file is not rewritten."""
+    """Record a paid engraving order once.
+
+    A complete order is queued for one send. An incomplete paid order is
+    stored as pending with an alert. It is not sent, not dropped, and not
+    completed from comments or extra fields. An existing file is not rewritten.
+    """
     status = assess(order)
-    if status != "ready":
+    if status in ("not_paid", "no_instructions"):
         return {"result": status, "path": None}
     directory = Path(outbox)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ("%s.json" % order_public_id(order))
-    payload = build_payload(order)
+    if path.exists():
+        current = json.loads(path.read_text(encoding="utf-8"))
+        if current.get("dispatchState") == "pending":
+            return {"result": "already_pending", "path": str(path)}
+        return {"result": "already_queued", "path": str(path)}
+    payload = build_payload(order) if status == "ready" else build_pending(order)
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
@@ -205,7 +301,7 @@ def enqueue(order, outbox):
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
-    return {"result": "queued", "path": str(path)}
+    return {"result": "queued" if status == "ready" else "pending", "path": str(path)}
 
 
 def claim(path):
@@ -225,6 +321,8 @@ def claim(path):
         payload = json.loads(target.read_text(encoding="utf-8"))
         if payload.get("paymentStatus") != "PAID":
             return {"result": "not_paid", "message": None}
+        if payload.get("dispatchState") == "pending":
+            return {"result": "pending", "message": None}
         if payload.get("dispatchState") == "sent":
             return {"result": "already_sent", "message": None}
         if payload.get("dispatchState") != "queued":

@@ -41,6 +41,7 @@ def paid_order():
                 "Item": "Knife Two",
                 "Name": "Bea",
                 "Phone": "4325550199",
+                "Font": "Shop Script",
                 "Custom font": "Shop Script",
                 "Placement": "Handle",
             }, 12, text="BBB"),
@@ -102,13 +103,13 @@ class QueueContractTest(unittest.TestCase):
             stored = json.loads(Path(first["path"]).read_text(encoding="utf-8"))
             self.assertEqual(stored["dispatchState"], "sent")
 
-    def test_legacy_line_without_version_is_not_queued(self):
+    def test_incomplete_paid_stays_pending_without_backfill(self):
         order = {
             "id": "ORDAVH4W",
             "paymentStatus": "PAID",
             "email": "buyer@example.com",
-            "orderComments": "ENGRAVING ORDER: send item to engraving before shipping.",
-            "extraFields": {},
+            "orderComments": "Font: Secret Script",
+            "extraFields": {"Font": "FROM EXTRA FIELD"},
             "items": [{
                 "id": 1,
                 "productId": 865178331,
@@ -117,10 +118,33 @@ class QueueContractTest(unittest.TestCase):
                 "selectedOptions": [],
             }],
         }
-        self.assertEqual(assess(order), "no_instructions")
+        self.assertEqual(assess(order), "pending")
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(enqueue(order, tmp)["result"], "no_instructions")
-            self.assertEqual(list(Path(tmp).glob("*.json")), [])
+            first = enqueue(order, tmp)
+            self.assertEqual(first["result"], "pending")
+            stored = json.loads(Path(first["path"]).read_text(encoding="utf-8"))
+            self.assertEqual(stored["dispatchState"], "pending")
+            self.assertIsNone(stored["message"])
+            self.assertEqual(stored["items"][0]["font"], "")
+            self.assertIn("version", stored["alert"][0]["problems"])
+            self.assertIn("font", stored["alert"][0]["problems"])
+            held = claim(first["path"])
+            self.assertEqual(held["result"], "pending")
+            self.assertIsNone(held["message"])
+            order["items"][0]["selectedOptions"] = [
+                {"name": "BC instructions v", "value": "1"},
+                {"name": "For SKU", "value": "SKU-1"},
+                {"name": "Name", "value": "Ada"},
+                {"name": "Phone", "value": "4325550100"},
+                {"name": "Font", "value": "1 Allura"},
+                {"name": "Placement", "value": "Blade"},
+                {"name": "Engraving text", "value": "AAA"},
+            ]
+            again = enqueue(order, tmp)
+            self.assertEqual(again["result"], "already_pending")
+            stored = json.loads(Path(first["path"]).read_text(encoding="utf-8"))
+            self.assertIsNone(stored["message"])
+            self.assertEqual(stored["items"][0]["font"], "")
 
     def test_claim_refuses_unpaid_file(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -62,7 +62,7 @@
   }
 
   function failText(code) {
-    if (code === "no-line") return "Engraving is not in your cart yet. Choose Yes on the item first, or call 432-253-3660.";
+    if (code === "association") return "Choose Yes on the item first so the engraving is tied to its part number.";
     if (code === "add-failed") return "Engraving instructions could not be saved on the cart. Please call 432-253-3660. The previous cart line was left in place.";
     if (code === "remove-failed" || code === "blank-restore-failed") return "Engraving was saved but the cart could not be cleaned up. Please call 432-253-3660 before paying, so you are not charged twice.";
     return "Engraving instructions could not be saved. Please call 432-253-3660.";
@@ -435,7 +435,12 @@
 
   function syncBoardSize(form) {
     var fields = readFields(form);
+    var price = C.BOARD_DISPLAY_PRICES[fields.board_size];
     var check = C.validate("board", fields);
+    if (!check.ok) {
+      boardStatus(price == null ? "" : "Board engraving " + fields.board_size + " ($" + price + ") is added when the form is complete.");
+      return;
+    }
     var rows = ls("bc_board_pending") || [];
     var sku = selectedSku(form, "bc-board-sku", "bc_board_current", rows);
     var row = rows.filter(function (item) { return item.sku === sku; })[0] || {};
@@ -466,7 +471,7 @@
     var links = "";
     if (knife) links += '<p><a href="#" data-bc-cat="' + KNIFE_CAT + '">Finish the knife engraving form</a></p>';
     if (board) links += '<p><a href="#" data-bc-cat="' + BOARD_CAT + '">Finish the cutting board engraving form</a></p>';
-    box.innerHTML = "<p><b>Every engraving line needs a finished questionnaire before payment.</b> One finished line does not cover a blank one. Finish each form, or remove the extra engraving line.</p>" + links;
+    box.innerHTML = "<p><b>Every engraving line needs a finished questionnaire before payment.</b> One finished line does not cover a blank one. A line already in the cart is not rechecked by the catalog. Finish the form or remove that line.</p>" + links;
     box.addEventListener("click", function (event) {
       var link = event.target && event.target.closest && event.target.closest("[data-bc-cat]");
       if (!link) return;
@@ -528,28 +533,17 @@
       if (klass.indexOf("yes") !== 0) return;
       target.disabled = true;
       pop.bcBusy = 1;
-      target.textContent = "Adding engraving\u2026";
+      target.textContent = "Opening the engraving form\u2026";
       if (no) no.style.display = "none";
-      status.textContent = "Adding engraving to your bag. This can take a few seconds\u2026";
-      setTimeout(function () {
-        if (d.getElementById("bc-engr-pop") === pop) status.textContent = "Still working. If nothing happens, please call 432-253-3660.";
-      }, 25000);
-      ecAdd({ id: C.ENGRAVE_ID, quantity: 1 }, function (success) {
-        if (!success) {
-          closePop("bc-engr-pop");
-          window.alert("Sorry, engraving could not be added. Please call 432-253-3660.");
-          return;
-        }
-        status.textContent = "Engraving added. Opening the engraving form\u2026";
-        remember("bc_engr_pending", "bc_engr_current", {
-          sku: item.sku || String(item.id),
-          id: item.id,
-          name: item.name || "",
-          url: item.url || location.href
-        });
-        try { sessionStorage.setItem("bc_engr_top", String(Date.now())); } catch (e) {}
-        window.Ecwid.openPage("category", { id: KNIFE_CAT });
+      status.textContent = "The $15 engraving is added after the form is complete.";
+      remember("bc_engr_pending", "bc_engr_current", {
+        sku: item.sku || String(item.id),
+        id: item.id,
+        name: item.name || "",
+        url: item.url || location.href
       });
+      try { sessionStorage.setItem("bc_engr_top", String(Date.now())); } catch (e) {}
+      window.Ecwid.openPage("category", { id: KNIFE_CAT });
     });
     d.body.appendChild(pop);
   }

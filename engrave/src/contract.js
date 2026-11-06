@@ -183,8 +183,37 @@
     };
   }
 
-  function fontOk(fields) {
-    return !!(cleanFont(fields && fields.provided_font) || oneLine(fields && fields.custom_font));
+  function resolvedFont(fields) {
+    var specimen = cleanFont(fields && fields.provided_font);
+    var custom = oneLine(fields && fields.custom_font);
+    if (specimen && custom) return specimen + " / " + custom;
+    return specimen || custom;
+  }
+
+  function resolvedText(role, fields) {
+    var text = trim(fields && fields.engraving_text);
+    if (text) return text;
+    if (role === "board") return trim(fields && fields.description);
+    return trim(fields && fields.what_to_engrave);
+  }
+
+  function resolvedPlacement(fields) {
+    var placement = cleanPlacement(fields && fields.placement);
+    if (!placement) return "";
+    if (/^other\b/i.test(placement)) {
+      var extra = trim(fields && fields.instructions);
+      if (!extra) return "";
+      return "Other: " + extra;
+    }
+    return placement;
+  }
+
+  function placementSaved(value) {
+    var placement = oneLine(value);
+    if (!placement) return false;
+    if (/^other$/i.test(placement)) return false;
+    if (/^other\b/i.test(placement) && placement.indexOf(":") === -1) return false;
+    return true;
   }
 
   function validate(role, fields) {
@@ -192,14 +221,13 @@
     var errors = [];
     if (!oneLine(fields.name)) errors.push("name");
     if (digits(fields.phone) < 7) errors.push("phone");
-    if (!fontOk(fields)) errors.push("font");
-    var placement = cleanPlacement(fields.placement);
-    if (!placement) errors.push("placement");
-    if (/^other\b/i.test(placement) && !trim(fields.instructions)) errors.push("instructions");
+    if (!resolvedFont(fields)) errors.push("font");
+    var placement = resolvedPlacement(fields);
+    if (!placement) errors.push(cleanPlacement(fields.placement) && /^other\b/i.test(cleanPlacement(fields.placement)) ? "instructions" : "placement");
     if (role === "board") {
       if (BOARD_DISPLAY_PRICES[fields.board_size] == null) errors.push("size");
-      if (!trim(fields.engraving_text) && !trim(fields.description)) errors.push("text");
-    } else if (!trim(fields.engraving_text) && !trim(fields.what_to_engrave)) {
+      if (!resolvedText(role, fields)) errors.push("text");
+    } else if (!resolvedText(role, fields)) {
       errors.push("text");
     }
     return { ok: errors.length === 0, errors: errors };
@@ -223,16 +251,17 @@
   function optionMap(fields, meta) {
     fields = fields || {};
     meta = meta || {};
+    var role = (meta && meta.role) || "knife";
     return {
       "BC instructions v": VERSION_VALUE,
-      "For SKU": oneLine(meta.forSku),
-      "Item": trim(meta.itemName),
+      "For SKU": oneLine(meta && meta.forSku),
+      "Item": trim(meta && meta.itemName),
       "Name": oneLine(fields.name),
       "Phone": oneLine(fields.phone),
-      "Font": cleanFont(fields.provided_font),
+      "Font": resolvedFont(fields),
       "Custom font": oneLine(fields.custom_font),
-      "Placement": cleanPlacement(fields.placement),
-      "Engraving text": trim(fields.engraving_text),
+      "Placement": resolvedPlacement(fields),
+      "Engraving text": resolvedText(role, fields),
       "What to engrave": trim(fields.what_to_engrave),
       "Description": trim(fields.description),
       "Instructions": trim(fields.instructions)
@@ -283,8 +312,13 @@
     var map = readOptions(it);
     if (!versioned(map)) return false;
     if (!oneLine(map[FOR_SKU])) return false;
-    var role = isBoard(it) ? "board" : "knife";
-    return validate(role, fieldsFromOptions(map)).ok;
+    if (!oneLine(map.Name)) return false;
+    if (digits(map.Phone) < 7) return false;
+    if (!oneLine(map.Font)) return false;
+    if (!placementSaved(map.Placement)) return false;
+    if (!trim(map["Engraving text"])) return false;
+    if (isBoard(it) && BOARD_DISPLAY_PRICES[map[SIZE]] == null) return false;
+    return true;
   }
 
   function allowCheckout(items) {
@@ -328,8 +362,9 @@
     job = job || {};
     var check = validate("knife", job.fields);
     if (!check.ok) return { error: "invalid", errors: check.errors, items: items || [] };
-    var sku = oneLine(job.forSku) || "GENERAL";
-    var options = optionMap(job.fields, { forSku: sku, itemName: job.itemName });
+    var sku = oneLine(job.forSku);
+    if (!sku) return { error: "association", items: items || [] };
+    var options = optionMap(job.fields, { forSku: sku, itemName: job.itemName, role: "knife" });
     var next = [];
     var replaced = false;
     var blanks = [];
@@ -355,8 +390,7 @@
     if (!replaced) {
       var pool = 0;
       blanks.forEach(function (it) { pool += it.quantity || 0; });
-      if (pool < 1) return { error: "no-line", items: items || [] };
-      pool -= 1;
+      if (pool > 0) pool -= 1;
       if (pool > 0) next.push(engraveShell({}, pool));
       next.push(engraveShell(options, 1));
     } else {
@@ -380,6 +414,7 @@
     if (spec.fields) {
       var check = validate("board", spec.fields);
       if (!check.ok) return { error: "invalid", errors: check.errors, items: items || [] };
+      if (!sku) return { error: "association", items: items || [] };
       size = spec.fields.board_size;
       sizeOk = BOARD_DISPLAY_PRICES[size] != null;
     }
@@ -401,7 +436,7 @@
       }
       if (!sizeOk || replaced) return;
       var options;
-      if (spec.fields) options = optionMap(spec.fields, { forSku: sku, itemName: spec.itemName });
+      if (spec.fields) options = optionMap(spec.fields, { forSku: sku, itemName: spec.itemName, role: "board" });
       else options = readOptions(it);
       options[SIZE] = size;
       if (sku) options[FOR_SKU] = sku;
@@ -410,8 +445,8 @@
       next.push(boardShell(options, 1));
       replaced = true;
     });
-    if (sizeOk && !replaced) {
-      var created = spec.fields ? optionMap(spec.fields, { forSku: sku, itemName: spec.itemName }) : {};
+    if (sizeOk && !replaced && spec.fields) {
+      var created = optionMap(spec.fields, { forSku: sku, itemName: spec.itemName, role: "board" });
       created[SIZE] = size;
       if (sku) created[FOR_SKU] = sku;
       if (spec.itemName) created[ITEM] = trim(spec.itemName);
@@ -586,9 +621,19 @@
     };
   }
 
+  var REQUIRED_AT_ADD = {
+    "BC instructions v": true,
+    "For SKU": true,
+    "Name": true,
+    "Phone": true,
+    "Font": true,
+    "Placement": true,
+    "Engraving text": true
+  };
+
   function catalogOptions() {
     return TEXT_OPTIONS.map(function (option) {
-      return { type: option.type, name: option.name, required: false };
+      return { type: option.type, name: option.name, required: !!REQUIRED_AT_ADD[option.name] };
     });
   }
 
